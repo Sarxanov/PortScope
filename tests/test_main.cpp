@@ -1,4 +1,5 @@
 #include "cli.hpp"
+#include "output.hpp"
 #include "port_parser.hpp"
 #include "scanner.hpp"
 
@@ -11,6 +12,7 @@
 
 #include <functional>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -104,6 +106,7 @@ void TestCliValidation() {
     }
 
     Require(!ParseCliForTest({"--host"}).ok, "missing --host value should fail");
+    Require(!ParseCliForTest({"--host", "--ports", "80"}).ok, "missing --host value should fail when next token is an option");
     Require(!ParseCliForTest({"--ports"}).ok, "missing --ports value should fail");
     Require(!ParseCliForTest({"--timeout", "0"}).ok, "zero timeout should fail");
     Require(!ParseCliForTest({"--timeout", "-1"}).ok, "negative timeout should fail");
@@ -111,6 +114,36 @@ void TestCliValidation() {
     Require(!ParseCliForTest({"--unknown"}).ok, "unknown option should fail");
     Require(!ParseCliForTest({"--host", "127.0.0.1"}).ok, "missing ports should fail");
     Require(!ParseCliForTest({"--ports", "80"}).ok, "missing host should fail");
+}
+
+void TestOutputFormatting() {
+    portscope::ScanConfig config;
+    config.host = "127.0.0.1";
+    config.timeout_ms = 1000;
+    config.concurrency = 2;
+
+    portscope::ScanOutput output;
+    output.resolved_address = "127.0.0.1";
+    output.results = {{8080, portscope::PortState::Open, 0}};
+    output.summary.open_count = 1;
+
+    std::ostringstream stream;
+    portscope::PrintScanResults(stream, config, output, std::chrono::milliseconds(0));
+    const std::string text = stream.str();
+
+    Require(text.find("8080/tcp  open") != std::string::npos, "port/state formatting should be readable");
+    Require(text.find("Scanned:   1 port") != std::string::npos, "single-port summary grammar mismatch");
+    Require(text.find("Elapsed:   <1 ms") != std::string::npos, "sub-millisecond elapsed display mismatch");
+
+    output.results.push_back({8081, portscope::PortState::Closed, ECONNREFUSED});
+    output.summary.closed_count = 1;
+
+    std::ostringstream stream_plural;
+    portscope::PrintScanResults(stream_plural, config, output, std::chrono::milliseconds(1500));
+    const std::string plural_text = stream_plural.str();
+
+    Require(plural_text.find("Scanned:   2 ports") != std::string::npos, "multi-port summary grammar mismatch");
+    Require(plural_text.find("Elapsed:   1.50 s") != std::string::npos, "second-based elapsed display mismatch");
 }
 
 void TestClassification() {
@@ -183,6 +216,30 @@ void TestLoopbackIntegration() {
             "Expected one open loopback port result");
 }
 
+void TestScanConfigValidation() {
+    portscope::ScanConfig config;
+    portscope::ScanOutput output;
+    std::string error;
+
+    config.host.clear();
+    config.ports = {80};
+    config.timeout_ms = 1000;
+    config.concurrency = 1;
+    Require(!portscope::ScanPorts(config, output, error), "empty host should fail");
+
+    config.host = "127.0.0.1";
+    config.ports.clear();
+    Require(!portscope::ScanPorts(config, output, error), "empty port list should fail");
+
+    config.ports = {80};
+    config.timeout_ms = 0;
+    Require(!portscope::ScanPorts(config, output, error), "zero timeout should fail");
+
+    config.timeout_ms = 1000;
+    config.concurrency = 0;
+    Require(!portscope::ScanPorts(config, output, error), "zero concurrency should fail");
+}
+
 void RunTest(const std::string& name, const std::function<void()>& fn) {
     fn();
     std::cout << "[PASS] " << name << "\n";
@@ -197,8 +254,10 @@ int main() {
         {"port_parser_valid", TestPortParserValidCases},
         {"port_parser_invalid", TestPortParserInvalidCases},
         {"cli_validation", TestCliValidation},
+        {"output_formatting", TestOutputFormatting},
         {"classification", TestClassification},
         {"loopback_integration", TestLoopbackIntegration},
+        {"scan_config_validation", TestScanConfigValidation},
     };
 
     for (const auto& test : tests) {

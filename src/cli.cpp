@@ -38,6 +38,10 @@ bool RequireValue(int argc, char* argv[], int index, std::string& value) {
     }
 
     value = argv[index + 1];
+    if (value.rfind("--", 0) == 0) {
+        return false;
+    }
+
     return true;
 }
 
